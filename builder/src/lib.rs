@@ -1,4 +1,5 @@
 extern crate proc_macro;
+extern crate syn;
 
 use proc_macro::TokenStream;
 
@@ -6,5 +7,9 @@ use proc_macro::TokenStream;
 pub fn derive(input: TokenStream) -> TokenStream {
     let _ = input;
 
-    unimplemented!()
+    let _derive_input: syn::DeriveInput = syn::parse_macro_input!(input);
+
+    println!("_derive_input = {:#?}", _derive_input);
+
+    TokenStream::new()
 }
