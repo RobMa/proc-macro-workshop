@@ -3,14 +3,21 @@ extern crate quote;
 extern crate syn;
 
 use proc_macro::TokenStream;
+use quote::quote;
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let _ = input;
+    let derive_input: syn::DeriveInput = syn::parse_macro_input!(input);
 
-    let _derive_input: syn::DeriveInput = syn::parse_macro_input!(input);
+    // println!("derive_input = {:#?}", derive_input);
 
-    println!("_derive_input = {:#?}", _derive_input);
+    let name = derive_input.ident;
 
-    TokenStream::new()
+    let out = quote! {
+        impl #name {
+            fn builder() {}
+        }
+    };
+
+    out.into()
 }
