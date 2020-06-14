@@ -35,6 +35,8 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let setter_functions = derive_setter_functions(&fields);
 
+    let build_function = derive_build_function(name, &fields);
+
     let out = quote! {
         #[derive(Debug, PartialEq)]
         struct #builder_name{
@@ -51,6 +53,8 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         impl #builder_name {
             #setter_functions
+
+            #build_function
         }
 
     };
@@ -102,5 +106,25 @@ fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
 
     quote! {
         #(#setter_functions)*
+    }
+}
+
+fn derive_build_function(name: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
+    let mut field_assignments: Vec<proc_macro2::TokenStream> = vec![];
+
+    for field in fields {
+        let field_name = field.name;
+        let field_error_msg = format!("Field '{}' not initialized.", field_name);
+        field_assignments.push(quote! {
+            #field_name: self.#field_name.take().ok_or(#field_error_msg)?
+        });
+    }
+
+    quote! {
+        fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+            Ok(#name {
+                #(#field_assignments),*
+            })
+        }
     }
 }
