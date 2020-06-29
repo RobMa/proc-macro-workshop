@@ -65,6 +65,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 struct Field<'f> {
     name: &'f syn::Ident,
     field_type: &'f syn::Type,
+    optional: bool,
 }
 
 fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
@@ -82,11 +83,47 @@ fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
 
     fields
         .iter()
-        .map(|x| Field {
-            name: x.ident.as_ref().expect("Expected identifier"),
-            field_type: &x.ty,
+        .map(|x| {
+            if is_option(&x.ty) {
+                Field {
+                    name: x.ident.as_ref().expect("Expected identifier"),
+                    field_type: get_option(&x.ty).expect("Expected Option Type"),
+                    optional: true,
+                }
+            } else {
+                Field {
+                    name: x.ident.as_ref().expect("Expected identifier"),
+                    field_type: &x.ty,
+                    optional: false,
+                }
+            }
         })
         .collect()
+}
+
+fn is_option(t: &syn::Type) -> bool {
+    match t {
+        syn::Type::Path(t) => match t.path.segments.first() {
+            Some(t) => t.ident == "Option",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn get_option<'f>(t: &'f syn::Type) -> Option<&'f syn::Type> {
+    if let syn::Type::Path(t) = t {
+        if let Some(t) = t.path.segments.first() {
+            if let syn::PathArguments::AngleBracketed(t) = &t.arguments {
+                if let Some(t) = t.args.first() {
+                    if let syn::GenericArgument::Type(t) = t {
+                        return Some(t);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
@@ -110,15 +147,22 @@ fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
 }
 
 fn derive_build_function(name: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
-    let mut field_assignments: Vec<proc_macro2::TokenStream> = vec![];
-
-    for field in fields {
-        let field_name = field.name;
-        let field_error_msg = format!("Field '{}' not initialized.", field_name);
-        field_assignments.push(quote! {
-            #field_name: self.#field_name.take().ok_or(#field_error_msg)?
-        });
-    }
+    let field_assignments: Vec<proc_macro2::TokenStream> = fields
+        .iter()
+        .map(|field| {
+            let field_name = field.name;
+            let field_error_msg = format!("Field '{}' not initialized.", field_name);
+            if !field.optional {
+                quote! {
+                    #field_name: self.#field_name.take().ok_or(#field_error_msg)?
+                }
+            } else {
+                quote! {
+                    #field_name: self.#field_name.take()
+                }
+            }
+        })
+        .collect();
 
     quote! {
         fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
