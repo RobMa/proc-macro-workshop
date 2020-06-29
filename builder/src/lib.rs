@@ -4,7 +4,7 @@ extern crate syn;
 
 use quote::{format_ident, quote};
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let derive_input: syn::DeriveInput = syn::parse_macro_input!(input);
 
@@ -17,8 +17,14 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|x| {
             let name = x.name;
             let field_type = x.field_type;
-            quote! {
-                #name: Option<#field_type>
+            if x.repeated_name.is_none() {
+                quote! {
+                    #name: Option<#field_type>
+                }
+            } else {
+                quote! {
+                    #name: #field_type
+                }
             }
         })
         .collect::<Vec<proc_macro2::TokenStream>>();
@@ -27,8 +33,13 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .iter()
         .map(|x| {
             let name = x.name;
+            let initial_value = if let Some(_) = x.repeated_name {
+                quote! {vec![]}
+            } else {
+                quote! {None}
+            };
             quote! {
-                #name: None
+                #name: #initial_value
             }
         })
         .collect::<Vec<proc_macro2::TokenStream>>();
@@ -66,6 +77,7 @@ struct Field<'f> {
     name: &'f syn::Ident,
     field_type: &'f syn::Type,
     optional: bool,
+    repeated_name: Option<syn::Ident>,
 }
 
 fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
@@ -87,18 +99,53 @@ fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
             if is_option(&x.ty) {
                 Field {
                     name: x.ident.as_ref().expect("Expected identifier"),
-                    field_type: get_option(&x.ty).expect("Expected Option Type"),
+                    field_type: get_angle_bracket_arg(&x.ty).expect("Expected Option Type"),
                     optional: true,
+                    repeated_name: get_repeated_name(&x.attrs),
                 }
             } else {
                 Field {
                     name: x.ident.as_ref().expect("Expected identifier"),
                     field_type: &x.ty,
                     optional: false,
+                    repeated_name: get_repeated_name(&x.attrs),
                 }
             }
         })
         .collect()
+}
+
+fn get_repeated_name(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
+    for attr in attrs.iter() {
+        for segment in attr.path.segments.iter() {
+            if segment.ident == "builder" {
+                for token in attr.tokens.clone().into_iter() {
+                    if let proc_macro2::TokenTree::Group(group) = token {
+                        if group.delimiter() == proc_macro2::Delimiter::Parenthesis {
+                            let mut stream = group.stream().into_iter();
+
+                            if let (
+                                proc_macro2::TokenTree::Ident(ident),
+                                proc_macro2::TokenTree::Punct(equals),
+                                proc_macro2::TokenTree::Literal(repeated_name),
+                            ) = (stream.next()?, stream.next()?, stream.next()?)
+                            {
+                                if ident == "each" && equals.as_char() == '=' {
+                                    if let syn::Lit::Str(repeated_name) =
+                                        syn::Lit::new(repeated_name)
+                                    {
+                                        return Some(format_ident!("{}", repeated_name.value()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn is_option(t: &syn::Type) -> bool {
@@ -111,7 +158,7 @@ fn is_option(t: &syn::Type) -> bool {
     }
 }
 
-fn get_option<'f>(t: &'f syn::Type) -> Option<&'f syn::Type> {
+fn get_angle_bracket_arg<'f>(t: &'f syn::Type) -> Option<&'f syn::Type> {
     if let syn::Type::Path(t) = t {
         if let Some(t) = t.path.segments.first() {
             if let syn::PathArguments::AngleBracketed(t) = &t.arguments {
@@ -131,11 +178,22 @@ fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
         .iter()
         .map(|field| {
             let name = field.name;
-            let field_type = field.field_type;
-            quote! {
-                fn #name(&mut self, x: #field_type) -> &mut Self{
-                    self.#name = Some(x);
-                    self
+            if let Some(repeated_name) = field.repeated_name.as_ref() {
+                let repeated_type =
+                    get_angle_bracket_arg(field.field_type).expect("Expected vector type");
+                quote! {
+                    fn #repeated_name(&mut self, x: #repeated_type) -> &mut Self{
+                        self.#name.push(x);
+                        self
+                    }
+                }
+            } else {
+                let field_type = field.field_type;
+                quote! {
+                    fn #name(&mut self, x: #field_type) -> &mut Self{
+                        self.#name = Some(x);
+                        self
+                    }
                 }
             }
         })
@@ -152,9 +210,13 @@ fn derive_build_function(name: &syn::Ident, fields: &[Field]) -> proc_macro2::To
         .map(|field| {
             let field_name = field.name;
             let field_error_msg = format!("Field '{}' not initialized.", field_name);
-            if !field.optional {
+            if !field.optional && field.repeated_name.is_none() {
                 quote! {
                     #field_name: self.#field_name.take().ok_or(#field_error_msg)?
+                }
+            } else if let Some(_) = field.repeated_name {
+                quote! {
+                    #field_name: self.#field_name.clone()
                 }
             } else {
                 quote! {
