@@ -12,12 +12,20 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let builder_name = format_ident!("{}Builder", name);
     let fields = get_fields(&derive_input);
 
+    if let Some(error_messages) = check_fields_for_errors(&fields) {
+        return error_messages.into();
+    }
+
     let struct_body = fields
         .iter()
         .map(|x| {
             let name = x.name;
             let field_type = x.field_type;
-            if x.repeated_name.is_none() {
+            if x.repeated_name
+                .as_ref()
+                .expect("Unexpected repeated_name error")
+                .is_none()
+            {
                 quote! {
                     #name: Option<#field_type>
                 }
@@ -33,7 +41,11 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .iter()
         .map(|x| {
             let name = x.name;
-            let initial_value = if let Some(_) = x.repeated_name {
+            let initial_value = if let Some(_) = x
+                .repeated_name
+                .as_ref()
+                .expect("Unexpected repeated_name error")
+            {
                 quote! {vec![]}
             } else {
                 quote! {None}
@@ -77,7 +89,7 @@ struct Field<'f> {
     name: &'f syn::Ident,
     field_type: &'f syn::Type,
     optional: bool,
-    repeated_name: Option<syn::Ident>,
+    repeated_name: Result<Option<syn::Ident>, syn::Error>,
 }
 
 fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
@@ -115,7 +127,28 @@ fn get_fields<'f>(derive_input: &'f syn::DeriveInput) -> Vec<Field<'f>> {
         .collect()
 }
 
-fn get_repeated_name(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
+fn check_fields_for_errors(fields: &[Field]) -> Option<proc_macro2::TokenStream> {
+    let error_messages: Vec<proc_macro2::TokenStream> = fields
+        .iter()
+        .filter(|field| field.repeated_name.is_err())
+        .map(|field| {
+            field
+                .repeated_name
+                .as_ref()
+                .expect_err("Expected repeated_name error")
+                .to_compile_error()
+        })
+        .collect();
+    if error_messages.is_empty() {
+        None
+    } else {
+        Some(quote! {
+            #(#error_messages)*
+        })
+    }
+}
+
+fn get_repeated_name(attrs: &[syn::Attribute]) -> Result<Option<syn::Ident>, syn::Error> {
     for attr in attrs.iter() {
         for segment in attr.path.segments.iter() {
             if segment.ident == "builder" {
@@ -125,17 +158,25 @@ fn get_repeated_name(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
                             let mut stream = group.stream().into_iter();
 
                             if let (
-                                proc_macro2::TokenTree::Ident(ident),
-                                proc_macro2::TokenTree::Punct(equals),
-                                proc_macro2::TokenTree::Literal(repeated_name),
-                            ) = (stream.next()?, stream.next()?, stream.next()?)
+                                Some(proc_macro2::TokenTree::Ident(ident)),
+                                Some(proc_macro2::TokenTree::Punct(equals)),
+                                Some(proc_macro2::TokenTree::Literal(repeated_name)),
+                            ) = (stream.next(), stream.next(), stream.next())
                             {
                                 if ident == "each" && equals.as_char() == '=' {
                                     if let syn::Lit::Str(repeated_name) =
                                         syn::Lit::new(repeated_name)
                                     {
-                                        return Some(format_ident!("{}", repeated_name.value()));
+                                        return Ok(Some(format_ident!(
+                                            "{}",
+                                            repeated_name.value()
+                                        )));
                                     }
+                                } else {
+                                    return Err(syn::Error::new(
+                                        group.span(),
+                                        "expected `each = '...'`",
+                                    ));
                                 }
                             }
                         }
@@ -145,7 +186,7 @@ fn get_repeated_name(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
         }
     }
 
-    None
+    Ok(None)
 }
 
 fn is_option(t: &syn::Type) -> bool {
@@ -178,7 +219,12 @@ fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
         .iter()
         .map(|field| {
             let name = field.name;
-            if let Some(repeated_name) = field.repeated_name.as_ref() {
+            if let Some(repeated_name) = field
+                .repeated_name
+                .as_ref()
+                .expect("Unexpected repeated_name error")
+                .as_ref()
+            {
                 let repeated_type =
                     get_angle_bracket_arg(field.field_type).expect("Expected vector type");
                 quote! {
@@ -210,11 +256,21 @@ fn derive_build_function(name: &syn::Ident, fields: &[Field]) -> proc_macro2::To
         .map(|field| {
             let field_name = field.name;
             let field_error_msg = format!("Field '{}' not initialized.", field_name);
-            if !field.optional && field.repeated_name.is_none() {
+            if !field.optional
+                && field
+                    .repeated_name
+                    .as_ref()
+                    .expect("Unexpected repeated_name error")
+                    .is_none()
+            {
                 quote! {
                     #field_name: self.#field_name.take().ok_or(#field_error_msg)?
                 }
-            } else if let Some(_) = field.repeated_name {
+            } else if let Some(_) = field
+                .repeated_name
+                .as_ref()
+                .expect("Unexpected repeated_name error")
+            {
                 quote! {
                     #field_name: self.#field_name.clone()
                 }
