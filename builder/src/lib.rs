@@ -27,7 +27,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .is_none()
             {
                 quote! {
-                    #name: Option<#field_type>
+                    #name: std::option::Option<#field_type>
                 }
             } else {
                 quote! {
@@ -237,7 +237,7 @@ fn derive_setter_functions(fields: &[Field]) -> proc_macro2::TokenStream {
                 let field_type = field.field_type;
                 quote! {
                     fn #name(&mut self, x: #field_type) -> &mut Self{
-                        self.#name = Some(x);
+                        self.#name = std::option::Option::Some(x);
                         self
                     }
                 }
@@ -283,8 +283,8 @@ fn derive_build_function(name: &syn::Ident, fields: &[Field]) -> proc_macro2::To
         .collect();
 
     quote! {
-        fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
-            Ok(#name {
+        fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
+            std::result::Result::Ok(#name {
                 #(#field_assignments),*
             })
         }
